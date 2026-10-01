@@ -1,0 +1,1 @@
+ALTER TABLE `confidenceHistory` ADD CONSTRAINT `confidenceHistory_date_unique` UNIQUE(`date`);

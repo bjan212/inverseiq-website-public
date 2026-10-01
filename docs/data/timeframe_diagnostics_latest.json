@@ -1,0 +1,117 @@
+{
+  "source": "Hyperliquid public candleSnapshot",
+  "collectedAt": "2026-09-07T22:25:13.173Z",
+  "sampleStart": "2026-09-05T22:25:13.173Z",
+  "sampleEnd": "2026-09-07T22:25:13.173Z",
+  "limitations": "Descriptive 48-hour OHLC close-return diagnostics only; not a strategy backtest and does not include event-level order flow, fees, funding, slippage, latency, or liquidation paths.",
+  "rows": [
+    {
+      "coin": "BTC",
+      "interval": "1m",
+      "candles": 2881,
+      "returns": 2880,
+      "medianAbsoluteMoveBps": 1.319,
+      "p90AbsoluteMoveBps": 4.9102,
+      "moveAbove10BpsPct": 1.22,
+      "moveAbove20BpsPct": 0.07,
+      "directionFlipPct": 48.55,
+      "lagOneReturnCorrelation": -0.0005
+    },
+    {
+      "coin": "BTC",
+      "interval": "5m",
+      "candles": 577,
+      "returns": 576,
+      "medianAbsoluteMoveBps": 3.1549,
+      "p90AbsoluteMoveBps": 9.8507,
+      "moveAbove10BpsPct": 9.72,
+      "moveAbove20BpsPct": 2.08,
+      "directionFlipPct": 52.43,
+      "lagOneReturnCorrelation": -0.0526
+    },
+    {
+      "coin": "BTC",
+      "interval": "15m",
+      "candles": 193,
+      "returns": 192,
+      "medianAbsoluteMoveBps": 6.2657,
+      "p90AbsoluteMoveBps": 17.3909,
+      "moveAbove10BpsPct": 29.69,
+      "moveAbove20BpsPct": 7.81,
+      "directionFlipPct": 47.09,
+      "lagOneReturnCorrelation": -0.0649
+    },
+    {
+      "coin": "ETH",
+      "interval": "1m",
+      "candles": 2881,
+      "returns": 2880,
+      "medianAbsoluteMoveBps": 2.4012,
+      "p90AbsoluteMoveBps": 7.5879,
+      "moveAbove10BpsPct": 4.86,
+      "moveAbove20BpsPct": 0.35,
+      "directionFlipPct": 49.26,
+      "lagOneReturnCorrelation": -0.0029
+    },
+    {
+      "coin": "ETH",
+      "interval": "5m",
+      "candles": 577,
+      "returns": 576,
+      "medianAbsoluteMoveBps": 5.2264,
+      "p90AbsoluteMoveBps": 16.7605,
+      "moveAbove10BpsPct": 26.22,
+      "moveAbove20BpsPct": 6.77,
+      "directionFlipPct": 49.35,
+      "lagOneReturnCorrelation": -0.0269
+    },
+    {
+      "coin": "ETH",
+      "interval": "15m",
+      "candles": 193,
+      "returns": 192,
+      "medianAbsoluteMoveBps": 9.2383,
+      "p90AbsoluteMoveBps": 30.2091,
+      "moveAbove10BpsPct": 48.44,
+      "moveAbove20BpsPct": 20.83,
+      "directionFlipPct": 49.2,
+      "lagOneReturnCorrelation": -0.0405
+    },
+    {
+      "coin": "SOL",
+      "interval": "1m",
+      "candles": 2881,
+      "returns": 2880,
+      "medianAbsoluteMoveBps": 3.782,
+      "p90AbsoluteMoveBps": 11.3556,
+      "moveAbove10BpsPct": 13.19,
+      "moveAbove20BpsPct": 1.81,
+      "directionFlipPct": 50.37,
+      "lagOneReturnCorrelation": 0.015
+    },
+    {
+      "coin": "SOL",
+      "interval": "5m",
+      "candles": 577,
+      "returns": 576,
+      "medianAbsoluteMoveBps": 8.0952,
+      "p90AbsoluteMoveBps": 24.3904,
+      "moveAbove10BpsPct": 43.58,
+      "moveAbove20BpsPct": 16.32,
+      "directionFlipPct": 51.33,
+      "lagOneReturnCorrelation": 0.0179
+    },
+    {
+      "coin": "SOL",
+      "interval": "15m",
+      "candles": 193,
+      "returns": 192,
+      "medianAbsoluteMoveBps": 14.2033,
+      "p90AbsoluteMoveBps": 48.3479,
+      "moveAbove10BpsPct": 58.85,
+      "moveAbove20BpsPct": 37.5,
+      "directionFlipPct": 45.86,
+      "lagOneReturnCorrelation": 0.0035
+    }
+  ]
+}

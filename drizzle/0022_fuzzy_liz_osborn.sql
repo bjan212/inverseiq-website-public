@@ -1,0 +1,1 @@
+ALTER TABLE `autoTraderSettings` MODIFY COLUMN `minConfidence` int NOT NULL DEFAULT 70;

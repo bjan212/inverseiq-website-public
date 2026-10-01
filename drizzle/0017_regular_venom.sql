@@ -1,0 +1,20 @@
+CREATE TABLE `userSettings` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`userId` int NOT NULL,
+	`defaultExchange` varchar(32) NOT NULL DEFAULT 'binance',
+	`defaultLeverage` int NOT NULL DEFAULT 10,
+	`defaultPositionSizePct` int NOT NULL DEFAULT 10,
+	`defaultOrderType` varchar(16) NOT NULL DEFAULT 'market',
+	`notifyEmail` varchar(320),
+	`telegramChatId` varchar(64),
+	`enableEmail` int NOT NULL DEFAULT 1,
+	`enableTelegram` int NOT NULL DEFAULT 0,
+	`enableBrowserNotifications` int NOT NULL DEFAULT 1,
+	`futuresAlertThreshold` int NOT NULL DEFAULT 75,
+	`spotAlertThreshold` int NOT NULL DEFAULT 80,
+	`autoStopLossPct` int NOT NULL DEFAULT 0,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `userSettings_id` PRIMARY KEY(`id`),
+	CONSTRAINT `userSettings_userId_unique` UNIQUE(`userId`)
+);

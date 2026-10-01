@@ -1,0 +1,1 @@
+ALTER TABLE `telegramSettings` ADD `alertOnGems` int DEFAULT 1 NOT NULL;

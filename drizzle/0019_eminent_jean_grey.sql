@@ -1,0 +1,1 @@
+ALTER TABLE `userSettings` ADD `badEntryFilter` varchar(16) DEFAULT 'deprioritize' NOT NULL;

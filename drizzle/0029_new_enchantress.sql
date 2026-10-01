@@ -1,0 +1,1 @@
+ALTER TABLE `feedbackOutbox` ADD `nextAttemptAt` timestamp;
