@@ -107,7 +107,7 @@ temp/
 *.sqlite3
 .project-config.json
 
-# Public export safety: local secrets, signing material, and build outputs
+# Public export safety rules
 .env
 .env.*
 !.env.example

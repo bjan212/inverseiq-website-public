@@ -1,6 +1,6 @@
 # InverseIQ Website
 
-InverseIQ is a trading-signal product developed by ACE&CROWN. This repository is a clean source export; runtime credentials and the original Git history are not included.
+InverseIQ is a trading-signal product developed by ACE&CROWN. This repository is a clean source export; runtime credentials and the source repository history are not included.
 
 ## Project structure
 
