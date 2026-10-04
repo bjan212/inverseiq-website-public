@@ -10,6 +10,7 @@ export const ENV = {
   inverseiqBackendUrl: process.env.INVERSEIQ_BACKEND_URL ?? "",
   inverseiqFeedbackApiKey: process.env.INVERSEIQ_FEEDBACK_API_KEY ?? "",
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
+  xaiApiKey: process.env.XAI_API_KEY ?? "",
 };
 
 export const env = ENV;

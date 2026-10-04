@@ -2984,8 +2984,8 @@ Be direct. Commit to a direction. Do not say "it could go either way".`;
         strategyPreference: z.enum(["ai_best_pick", "momentum_rsi"]).optional().default("ai_best_pick"),
       }))
       .mutation(async ({ input, ctx }) => {
-        const { invokeLLM } = await import("./_core/llm");
-        const { computeValiditySeconds } = await import("./lib/validityTimer");
+        const { requestGrokVeto } = await import("./lib/grokVeto");
+        const { computeValiditySeconds, formatValidityDuration } = await import("./lib/validityTimer");
         const { runSignalScan } = await import("./lib/signalEngine");
 
         // ── Fetch user inverse patterns from DB (server-side, not just LLM text) ──
@@ -3068,326 +3068,142 @@ Be direct. Commit to a direction. Do not say "it could go either way".`;
           { tf: primaryTfLabel, rsi: best.rsi, macd: best.macdSignal, bbPos: best.bbPosition, ema: "—", volTrend: volTrendStr },
         ];
 
-        const indText = tfSummaries.map(t =>
-          `  ${t.tf}: RSI=${t.rsi} | MACD=${t.macd} | BB=${t.bbPos}% | EMA=${t.ema}`
-        ).join("\n");
+        const accuracyFactors = (best.accuracyFactors ?? []).filter((factor): factor is string => typeof factor === "string");
+        const badEntryFilterMode = input.badEntryFilter ?? "deprioritize";
+        const grokVeto = await requestGrokVeto(sym, best.direction, accuracyFactors);
+        const isFiltered = Boolean(grokVeto && badEntryFilterMode === "hide");
+        const grokVetoWarning = Boolean(grokVeto && badEntryFilterMode === "deprioritize");
+        const direction = best.direction;
+        const baseEvidenceScore = best.rawEvidenceScore ?? best.confidence;
+        const executionEvidenceScore = best.confidence;
+        const confidence = (executionEvidenceScore >= 75
+          ? "HIGH"
+          : executionEvidenceScore >= 60
+            ? "MEDIUM"
+            : "LOW") as "HIGH" | "MEDIUM" | "LOW";
+        const confluenceScore = best.compositeScore;
+        const validitySeconds = computeValiditySeconds({
+          atr1h,
+          currentPrice,
+          rsi1h: best.rsi,
+          confidence,
+          primaryTf: (input.primaryTf === "1d" ? "4h" : input.primaryTf) ?? "1h",
+        });
+        const analysis = [best.keyReason, ...accuracyFactors].filter(Boolean).join("\n");
+        const signalResult = {
+          success: true,
+          symbol: sym,
+          currentPrice,
+          direction,
+          confidence,
+          isBadEntry: false,
+          badEntryReason: null,
+          isFiltered,
+          filterReason: isFiltered && grokVeto
+            ? `Grok veto cited engine factor: ${grokVeto.citedFactor}. ${grokVeto.reason}`
+            : null,
+          grokVeto,
+          grokVetoWarning,
+          entry: best.entryPrice,
+          tp1: best.takeProfit,
+          tp2: best.tp2,
+          sl: best.stopLoss,
+          rrTp1: best.riskReward.toFixed(2),
+          rrTp2: (best.riskReward * 1.5).toFixed(2),
+          confidenceNum: baseEvidenceScore,
+          executionEvidenceScore,
+          validity: formatValidityDuration(validitySeconds),
+          validitySeconds,
+          keyReason: best.keyReason ?? "",
+          analysis,
+          indicators: tfSummaries,
+          fundingRate: fundingStr,
+          oiChange: oiStr,
+          atr: atr1h,
+          confluenceScore,
+          layer1Score: best.technicalScore,
+          layer2Score: best.microstructureScore,
+          layer3EntryQuality: best.volatilityScore >= 70 ? "good" as const : best.volatilityScore >= 50 ? "acceptable" as const : "poor" as const,
+          longShortRatio: best.longShortRatio,
+          cvdBias: best.cvdBias,
+          orderBookImbalance: best.orderBookImbalance,
+          technicalScore: best.technicalScore,
+          microstructureScore: best.microstructureScore,
+          volatilityScore: best.volatilityScore,
+          patternType: best.patternType,
+          strategyPreference: strategySelection.requested,
+          strategyPreferenceApplied: strategySelection.applied,
+          strategySelectionLabel: strategySelection.label,
+          strategySelectionNote: strategySelection.note,
+          vpBias: best.vpBias,
+          vpScore: best.vpScore,
+          priceVsPoc: best.priceVsPoc,
+          sentimentLabel: best.sentimentLabel,
+          sentimentBias: best.sentimentBias,
+          fearGreedValue: best.fearGreedValue,
+          fearGreedLabel: best.fearGreedLabel,
+          isTrending: best.isTrending,
+          trendingRank: best.trendingRank,
+          entryQualityScore: best.entryQualityScore,
+          entryQualityLabel: best.entryQualityLabel,
+          marketStructureTrend: best.marketStructureTrend,
+          liquiditySweep: best.liquiditySweep,
+          fvgDetected: best.fvgDetected,
+          rsiDivergence: best.rsiDivergence,
+          adx: best.adx,
+          vwapSignal: best.vwapSignal,
+          candlePattern: best.candlePattern,
+          nearFibLevel: best.nearFibLevel,
+          accuracyFactors,
+          runnerUps,
+          totalPairsScanned: totalPairs,
+          listedOnExchanges,
+          bestExchange,
+          exchangeCounts: {},
+        };
 
-        const patternNote = input.symbolPatternContextMap?.[sym]
-          ? `\nUser inverse pattern context: ${input.symbolPatternContextMap[sym]}`
-          : "";
+        // A valid veto only marks the result hidden when the user's filter requests it.
+        // Preserve every engine-owned signal field, including direction, prices, and confidence.
+        if (isFiltered) return signalResult;
 
-        const layer1Summary = `Technical Score: ${best.technicalScore}/100 | RSI: ${best.rsi} | MACD: ${best.macdSignal} | BB Position: ${best.bbPosition}%`;
-        const layer2Summary = `Microstructure Score: ${best.microstructureScore}/100 | L/S Ratio: ${best.longShortRatio} | OI: ${best.oiTrend} | CVD: ${best.cvdBias} | OB Imbalance: ${(best.orderBookImbalance * 100).toFixed(1)}%`;
-        const layer3Summary = `Volatility Score: ${best.volatilityScore}/100 | Pattern: ${best.patternType} | ATR: ${atr1h}`;
-
-        const systemPrompt = `You are an elite crypto futures trading analyst using a 5-layer confluence system. You have already passed Layers 1-3 (technical, microstructure, volatility). Your job is Layer 4: synthesise all data and provide the SINGLE BEST trade setup with maximum precision.
-ACCURACY MANDATE: Only issue HIGH confidence if 5+ of 6 MTF indicators agree AND microstructure confirms. MEDIUM if 4/6 agree. LOW if borderline — but prefer to say BAD_ENTRY if the setup is not clean.
-You MUST provide:
-1. DIRECTION: LONG or SHORT (never neutral)
-2. ENTRY: exact price (not a range)
-3. TP1: conservative (~1.5x ATR from entry)
-4. TP2: extended (~3x ATR from entry)
-5. SL: below/above key structure (~1x ATR)
-6. RR_TP1 and RR_TP2: risk:reward ratios
-7. BAD_ENTRY: YES/NO — is this an ideal entry RIGHT NOW?
-8. CONFIDENCE: HIGH / MEDIUM / LOW (threshold: HIGH requires 5-layer full agreement)
-9. VALIDITY: minutes/hours this setup is valid
-10. KEY_REASON: one decisive sentence
-11. CONFLUENCE_SCORE: 0-100 (your Layer 4 AI score)
-Be decisive. No hedging.`;
-
-        const userPrompt = `SELECTED COIN: ${sym} (highest conviction from ${totalPairs}-pair multi-exchange scan)
-Current price: $${currentPrice.toLocaleString()}
-ATR (1H): ${atr1h}
-Funding rate: ${fundingStr || "N/A"}
-OI change: ${oiStr || "N/A"}
-CVD bias: ${best.cvdBias} | Order book imbalance: ${(best.orderBookImbalance * 100).toFixed(1)}%
-
-5-LAYER CONFLUENCE RESULTS:
-${layer1Summary}
-${layer2Summary}
-${layer3Summary}
-
-ACCURACY ENGINE (Layer 5):
-- Market Structure: ${best.marketStructureTrend} | ADX: ${best.adx?.toFixed(1) ?? 'N/A'} (${(best.adx ?? 0) > 25 ? 'TRENDING' : 'RANGING'})
-- Liquidity Sweep: ${best.liquiditySweep ? 'YES — stop hunt detected, high-probability reversal zone' : 'No'}
-- Fair Value Gap: ${best.fvgDetected ? 'YES — price imbalance detected, strong magnet zone' : 'No'}
-- RSI Divergence: ${best.rsiDivergence ? best.rsiDivergence + ' divergence detected' : 'None'}
-- VWAP Signal: ${best.vwapSignal}
-- Candle Pattern: ${best.candlePattern}
-- Near Fibonacci Level: ${best.nearFibLevel ? 'YES' : 'No'}
-- Entry Quality Score: ${best.entryQualityScore}/100 (Grade ${best.entryQualityLabel})
-- Accuracy Factors: ${best.accuracyFactors?.join(', ') || 'None'}
-
-Multi-timeframe indicators:
-${indText}${patternNote}
-
-Runner-up coins (for context; final evidence score):
-${runnerUps.map((r, i) => `${i+2}. ${r.symbol} — ${r.direction} | RSI ${r.rsi1h} | Evidence ${r.score}/100`).join("\n")}
-
-Respond in EXACT format:
-DIRECTION: [LONG or SHORT]
-CONFIDENCE: [HIGH / MEDIUM / LOW]
-BAD_ENTRY: [YES / NO]
-BAD_ENTRY_REASON: [one sentence if YES, else N/A]
-ENTRY: $[price]
-TP1: $[price]
-TP2: $[price]
-SL: $[price]
-RR_TP1: [ratio]
-RR_TP2: [ratio]
-VALIDITY: [e.g. 2-4 hours]
-KEY_REASON: [one sentence]
-CONFLUENCE_SCORE: [0-100]
-ANALYSIS:
-[3-5 sentence full analysis covering the 5-layer results and key market drivers]`;
-
-        try {
-          const response = await invokeLLM({
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user",   content: userPrompt },
-            ],
-          });
-          const rawContent = response.choices?.[0]?.message?.content ?? "";
-          const content = typeof rawContent === "string" ? rawContent : "";
-
-          const dirMatch       = content.match(/DIRECTION:\s*(LONG|SHORT)/i);
-          const confMatch      = content.match(/CONFIDENCE:\s*(HIGH|MEDIUM|LOW)/i);
-          const badEntryMatch  = content.match(/BAD_ENTRY:\s*(YES|NO)/i);
-          const badReasonMatch = content.match(/BAD_ENTRY_REASON:\s*([^\n]+)/i);
-          const entryMatch     = content.match(/^ENTRY:\s*\$?([\d,]+\.?\d*)/im);
-          const tp1Match       = content.match(/^TP1:\s*\$?([\d,]+\.?\d*)/im);
-          const tp2Match       = content.match(/^TP2:\s*\$?([\d,]+\.?\d*)/im);
-          const slMatch        = content.match(/^SL:\s*\$?([\d,]+\.?\d*)/im);
-          const rr1Match       = content.match(/RR_TP1:\s*([^\n]+)/i);
-          const rr2Match       = content.match(/RR_TP2:\s*([^\n]+)/i);
-          const validMatch     = content.match(/VALIDITY:\s*([^\n]+)/i);
-          const keyMatch       = content.match(/KEY_REASON:\s*([^\n]+)/i);
-          const confScoreMatch = content.match(/CONFLUENCE_SCORE:\s*(\d+)/i);
-          const analysisMatch  = content.match(/ANALYSIS:\n([\s\S]+)$/i);
-
-          const parsePrice = (m: RegExpMatchArray | null) => m ? parseFloat(m[1].replace(/,/g, "")) : null;
-          // ALWAYS use engine direction — it's mathematically consistent with entry/TP/SL
-          const direction   = best.direction;
-          const isBadEntry  = (badEntryMatch?.[1]?.toUpperCase() ?? "NO") === "YES";
-          // Keep the comparable base evidence used for candidate ranking separate
-          // from the final Auto Trader score after ML/private safety suppression.
-          const baseEvidenceScore = best.rawEvidenceScore ?? best.confidence;
-          const executionEvidenceScore = best.confidence;
-          const confidenceLabel = (confMatch?.[1]?.toUpperCase() ?? (baseEvidenceScore >= 75 ? "HIGH" : baseEvidenceScore >= 60 ? "MEDIUM" : "LOW")) as "HIGH" | "MEDIUM" | "LOW";
-          const confidence = confidenceLabel;
-          const confluenceScore = confScoreMatch ? parseInt(confScoreMatch[1]) : best.compositeScore;
-
-          // ── Bad Entry Filter Logic ──────────────────────────────────────────
-          // Resolve the user's bad-entry preference (from input or DB)
-          const badEntryFilterMode = input.badEntryFilter ?? "deprioritize";
-          if (isBadEntry && badEntryFilterMode === "hide") {
-            // Skip this signal entirely — return a deprioritized runner-up instead
-            const runnerUpSymbol = runnerUps[0]?.symbol;
-            return {
-              success: true,
-              symbol: sym,
-              currentPrice,
-              direction,
-              confidence: "LOW" as const,
-              isBadEntry: true,
-              badEntryReason: badReasonMatch?.[1]?.trim() ?? "Current price is not an ideal entry.",
-              isFiltered: true,
-              filterReason: `Signal hidden (bad entry). Try ${runnerUpSymbol || 'refreshing'} or wait for a better setup.`,
-              entry: 0, tp1: 0, tp2: 0, sl: 0,
-              rrTp1: "0", rrTp2: "0",
-              confidenceNum: 0,
-              executionEvidenceScore: 0,
-              validity: null,
-              validitySeconds: 0,
-              keyReason: badReasonMatch?.[1]?.trim() ?? "Bad entry — filtered.",
-              analysis: "",
-              indicators: tfSummaries,
-              fundingRate: fundingStr, oiChange: oiStr, atr: atr1h,
-              confluenceScore: 0, layer1Score: 0, layer2Score: 0,
-              layer3EntryQuality: "poor" as const,
-              longShortRatio: best.longShortRatio, cvdBias: best.cvdBias,
-              orderBookImbalance: best.orderBookImbalance,
-              technicalScore: best.technicalScore, microstructureScore: best.microstructureScore,
-              volatilityScore: best.volatilityScore, patternType: best.patternType,
-              vpBias: best.vpBias, vpScore: best.vpScore, priceVsPoc: best.priceVsPoc,
-              sentimentLabel: best.sentimentLabel, sentimentBias: best.sentimentBias,
-              fearGreedValue: best.fearGreedValue, fearGreedLabel: best.fearGreedLabel,
-              isTrending: best.isTrending, trendingRank: best.trendingRank,
-              entryQualityScore: 0, entryQualityLabel: "F",
-              marketStructureTrend: best.marketStructureTrend, liquiditySweep: false,
-              fvgDetected: false, rsiDivergence: null, adx: 0, vwapSignal: "",
-              candlePattern: "", nearFibLevel: false, accuracyFactors: [],
-              runnerUps, totalPairsScanned: totalPairs, listedOnExchanges, bestExchange, exchangeCounts: {},
-              strategyPreference: strategySelection.requested,
-              strategyPreferenceApplied: strategySelection.applied,
-              strategySelectionLabel: strategySelection.label,
-              strategySelectionNote: strategySelection.note,
-            };
-          }
-
-          // NOTE: LOW confidence no longer blocks the signal — the engine always produces
-          // real ATR-based entry/TP/SL from live Bybit data. LOW confidence is surfaced
-          // as a warning badge only, not a blocker. isBadEntry (from LLM) still gates
-          // the execute button when the LLM explicitly says the entry is poor.
-
-          // ── Auto-save signals ≥85% confidence for accountability tracking ──
-          if (executionEvidenceScore >= 85) {
-            const validityMs = computeValiditySeconds({
-              atr1h, currentPrice, rsi1h: best.rsi, confidence,
-              primaryTf: (input.primaryTf === "1d" ? "4h" : input.primaryTf) ?? "1h",
-              llmValidityHint: validMatch?.[1]?.trim() ?? null,
-            }) * 1000;
-            void (async () => {
-              // Persist the actual feature vector at generation time. Recreating it
-              // later from price/strategy fields caused the ML trainer to learn from
-              // synthetic inputs rather than the market state that produced the signal.
-              const { generateFeatures, getFeatureNames } = await import("./lib/featureEngine");
-              const mlFeatures = await generateFeatures(sym);
-              await db.saveSignal({
-                symbol: sym, direction: direction as "LONG" | "SHORT",
-                strategy: "5-layer-confluence",
-                entryPrice: String(best.entryPrice),
-                stopLoss: String(best.stopLoss),
-                takeProfit: String(best.takeProfit),
-                confidence: executionEvidenceScore,
-                riskRewardRatio: best.riskReward.toFixed(2),
-                expiresAt: new Date(Date.now() + validityMs),
-                metadata: JSON.stringify({
-                  tp2: best.tp2, confluenceScore, keyReason: keyMatch?.[1]?.trim() ?? "",
-                  listedOn: listedOnExchanges, timeframe: input.primaryTf ?? "1h",
-                  strategyPreference: strategySelection.requested,
-                  strategyPreferenceApplied: strategySelection.applied,
-                  strategySelectionLabel: strategySelection.label,
-                  inverseApplied: !!(userPatternsInput?.globalPatterns?.length || userPatternsInput?.symbolPatterns?.length),
-                  entryQualityLabel: best.entryQualityLabel,
-                  entryQualityScore: best.entryQualityScore,
-                  mlFeatures: getFeatureNames().map(name => mlFeatures[name] ?? 0),
-                }),
-              });
-              const { notifyQualifiedHighConfidenceSignal } = await import("./lib/telegramBot");
-              await notifyQualifiedHighConfidenceSignal({
-                symbol: sym, direction: direction as "LONG" | "SHORT", entryPrice: String(best.entryPrice),
-                takeProfit: String(best.takeProfit), stopLoss: String(best.stopLoss), confidence: executionEvidenceScore,
+        // ── Auto-save signals ≥85% confidence for accountability tracking ──
+        if (executionEvidenceScore >= 85) {
+          const validityMs = validitySeconds * 1000;
+          void (async () => {
+            const { generateFeatures, getFeatureNames } = await import("./lib/featureEngine");
+            const mlFeatures = await generateFeatures(sym);
+            await db.saveSignal({
+              symbol: sym, direction: direction as "LONG" | "SHORT",
+              strategy: "5-layer-confluence",
+              entryPrice: String(best.entryPrice),
+              stopLoss: String(best.stopLoss),
+              takeProfit: String(best.takeProfit),
+              confidence: executionEvidenceScore,
+              riskRewardRatio: best.riskReward.toFixed(2),
+              expiresAt: new Date(Date.now() + validityMs),
+              metadata: JSON.stringify({
+                tp2: best.tp2, confluenceScore, keyReason: best.keyReason ?? "",
+                listedOn: listedOnExchanges, timeframe: input.primaryTf ?? "1h",
+                strategyPreference: strategySelection.requested,
+                strategyPreferenceApplied: strategySelection.applied,
+                strategySelectionLabel: strategySelection.label,
+                inverseApplied: !!(userPatternsInput?.globalPatterns?.length || userPatternsInput?.symbolPatterns?.length),
                 entryQualityLabel: best.entryQualityLabel,
-              });
-            })().catch(error => console.warn("[Signal Engine] Failed to persist generation-time feature vector:", error));
-          }
-
-          return {
-            success: true,
-            symbol: sym,
-            currentPrice,
-            direction,
-            confidence,
-            isBadEntry,
-            badEntryReason: isBadEntry ? (badReasonMatch?.[1]?.trim() ?? "Current price is not an ideal entry.") : null,
-            // Use engine's ATR-based entry/TP/SL as primary — more reliable than LLM price parsing
-            entry:    best.entryPrice,
-            tp1:      best.takeProfit,
-            tp2:      best.tp2,
-            sl:       best.stopLoss,
-            rrTp1:    best.riskReward.toFixed(2),
-            rrTp2:    (best.riskReward * 1.5).toFixed(2),
-            // Base evidence is comparable across the primary and runner-ups. The
-            // execution score separately includes conservative safety suppression.
-            confidenceNum: baseEvidenceScore,
-            executionEvidenceScore,
-            validity: validMatch?.[1]?.trim() ?? null,
-            validitySeconds: computeValiditySeconds({
-              atr1h,
-              currentPrice,
-              rsi1h: best.rsi,
-              confidence: confidence,
-              primaryTf: (input.primaryTf === "1d" ? "4h" : input.primaryTf) ?? "1h",
-              llmValidityHint: validMatch?.[1]?.trim() ?? null,
-            }),
-            keyReason:  keyMatch?.[1]?.trim() ?? "",
-            analysis:   analysisMatch?.[1]?.trim() ?? content,
-            indicators: tfSummaries,
-            fundingRate: fundingStr,
-            oiChange:    oiStr,
-            atr:         atr1h,
-            confluenceScore,
-            layer1Score: best.technicalScore,
-            layer2Score: best.microstructureScore,
-            layer3EntryQuality: best.volatilityScore >= 70 ? "good" : best.volatilityScore >= 50 ? "acceptable" : "poor",
-            // New microstructure fields
-            longShortRatio: best.longShortRatio,
-            cvdBias: best.cvdBias,
-            orderBookImbalance: best.orderBookImbalance,
-            technicalScore: best.technicalScore,
-            microstructureScore: best.microstructureScore,
-            volatilityScore: best.volatilityScore,
-            patternType: best.patternType,
-            strategyPreference: strategySelection.requested,
-            strategyPreferenceApplied: strategySelection.applied,
-            strategySelectionLabel: strategySelection.label,
-            strategySelectionNote: strategySelection.note,
-            vpBias: best.vpBias,
-            vpScore: best.vpScore,
-            priceVsPoc: best.priceVsPoc,
-            sentimentLabel: best.sentimentLabel,
-            sentimentBias: best.sentimentBias,
-            fearGreedValue: best.fearGreedValue,
-            fearGreedLabel: best.fearGreedLabel,
-            isTrending: best.isTrending,
-            trendingRank: best.trendingRank,
-            // Accuracy Engine
-            entryQualityScore: best.entryQualityScore,
-            entryQualityLabel: best.entryQualityLabel,
-            marketStructureTrend: best.marketStructureTrend,
-            liquiditySweep: best.liquiditySweep,
-            fvgDetected: best.fvgDetected,
-            rsiDivergence: best.rsiDivergence,
-            adx: best.adx,
-            vwapSignal: best.vwapSignal,
-            candlePattern: best.candlePattern,
-            nearFibLevel: best.nearFibLevel,
-            accuracyFactors: best.accuracyFactors,
-            runnerUps,
-            totalPairsScanned: totalPairs,
-            listedOnExchanges,
-            bestExchange,
-            exchangeCounts: {},
-          };
-        } catch (err) {
-          // LLM failed — fall back to engine's real ATR-based prices so the user always
-          // sees a real signal rather than null/zero placeholders.
-          return {
-            success: true,
-            symbol: sym, currentPrice, direction: best.direction,
-            confidence: "MEDIUM" as const, isBadEntry: false, badEntryReason: null,
-            entry: best.entryPrice, tp1: best.takeProfit, tp2: best.tp2, sl: best.stopLoss,
-            rrTp1: best.riskReward.toFixed(2), rrTp2: (best.riskReward * 1.5).toFixed(2),
-            confidenceNum: best.confidence,
-            validity: null, validitySeconds: 3600,
-            keyReason: best.keyReason, analysis: "", indicators: tfSummaries,
-            fundingRate: fundingStr, oiChange: oiStr, atr: atr1h,
-            confluenceScore: best.compositeScore,
-            layer1Score: best.technicalScore, layer2Score: best.microstructureScore,
-            layer3EntryQuality: best.volatilityScore >= 70 ? "good" : best.volatilityScore >= 50 ? "acceptable" : "poor",
-            longShortRatio: best.longShortRatio, cvdBias: best.cvdBias,
-            orderBookImbalance: best.orderBookImbalance, technicalScore: best.technicalScore,
-            microstructureScore: best.microstructureScore, volatilityScore: best.volatilityScore,
-            patternType: best.patternType,
-            strategyPreference: strategySelection.requested,
-            strategyPreferenceApplied: strategySelection.applied,
-            strategySelectionLabel: strategySelection.label,
-            strategySelectionNote: strategySelection.note,
-            vpBias: best.vpBias, vpScore: best.vpScore, priceVsPoc: best.priceVsPoc,
-            sentimentLabel: best.sentimentLabel, sentimentBias: best.sentimentBias,
-            fearGreedValue: best.fearGreedValue, fearGreedLabel: best.fearGreedLabel,
-            isTrending: best.isTrending, trendingRank: best.trendingRank,
-            entryQualityScore: best.entryQualityScore, entryQualityLabel: best.entryQualityLabel,
-            marketStructureTrend: best.marketStructureTrend, liquiditySweep: best.liquiditySweep,
-            fvgDetected: best.fvgDetected, rsiDivergence: best.rsiDivergence,
-            adx: best.adx, vwapSignal: best.vwapSignal, candlePattern: best.candlePattern,
-            nearFibLevel: best.nearFibLevel, accuracyFactors: best.accuracyFactors,
-            runnerUps, totalPairsScanned: totalPairs, listedOnExchanges, bestExchange, exchangeCounts: {},
-          };
+                entryQualityScore: best.entryQualityScore,
+                mlFeatures: getFeatureNames().map(name => mlFeatures[name] ?? 0),
+              }),
+            });
+            const { notifyQualifiedHighConfidenceSignal } = await import("./lib/telegramBot");
+            await notifyQualifiedHighConfidenceSignal({
+              symbol: sym, direction: direction as "LONG" | "SHORT", entryPrice: String(best.entryPrice),
+              takeProfit: String(best.takeProfit), stopLoss: String(best.stopLoss), confidence: executionEvidenceScore,
+              entryQualityLabel: best.entryQualityLabel,
+            });
+          })().catch(error => console.warn("[Signal Engine] Failed to persist generation-time feature vector:", error));
         }
+
+        return signalResult;
+
       }),
 
     /**
@@ -3401,8 +3217,8 @@ ANALYSIS:
         badEntryFilter: z.enum(["hide", "deprioritize", "show"]).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        const { invokeLLM } = await import("./_core/llm");
-        const { computeValiditySeconds } = await import("./lib/validityTimer");
+        const { requestGrokVeto } = await import("./lib/grokVeto");
+        const { computeValiditySeconds, formatValidityDuration } = await import("./lib/validityTimer");
         const sym = input.symbol.replace("/", "").replace("-PERP", "").replace(":USDT", "").toUpperCase();
 
         // ── Fetch user inverse patterns from DB (server-side) ──
@@ -3454,221 +3270,87 @@ ANALYSIS:
           { tf: primaryTfLabelScan, rsi: best.rsi, macd: best.macdSignal, bbPos: best.bbPosition, ema: "—", volTrend: volTrendScan },
         ];
 
-        const indText = tfSummaries.map(t =>
-          `  ${t.tf}: RSI=${t.rsi} | MACD=${t.macd} | BB=${t.bbPos}% | EMA=${t.ema}`
-        ).join("\n");
+        const accuracyFactors = (best.accuracyFactors ?? []).filter((factor): factor is string => typeof factor === "string");
+        const grokVeto = await requestGrokVeto(sym, best.direction, accuracyFactors);
+        const badEntryFilterMode = input.badEntryFilter ?? "deprioritize";
+        const isFiltered = Boolean(grokVeto && badEntryFilterMode === "hide");
+        const grokVetoWarning = Boolean(grokVeto && badEntryFilterMode === "deprioritize");
+        const confidenceNum = best.confidence;
+        const confidence = (confidenceNum >= 75
+          ? "HIGH"
+          : confidenceNum >= 60
+            ? "MEDIUM"
+            : "LOW") as "HIGH" | "MEDIUM" | "LOW";
+        const validitySeconds = computeValiditySeconds({
+          atr1h,
+          currentPrice,
+          rsi1h: best.rsi,
+          confidence,
+          primaryTf: (input.primaryTf === "1d" ? "4h" : input.primaryTf) ?? "1h",
+        });
+        const analysis = [best.keyReason, ...accuracyFactors].filter(Boolean).join("\n");
+        return {
+          success: true,
+          symbol: sym,
+          currentPrice,
+          direction: best.direction,
+          confidence,
+          confidenceNum,
+          isBadEntry: false,
+          badEntryReason: null,
+          isFiltered,
+          filterReason: isFiltered && grokVeto
+            ? `Grok veto cited engine factor: ${grokVeto.citedFactor}. ${grokVeto.reason}`
+            : null,
+          grokVeto,
+          grokVetoWarning,
+          entry: best.entryPrice,
+          tp1: best.takeProfit,
+          tp2: best.tp2,
+          sl: best.stopLoss,
+          rrTp1: best.riskReward.toFixed(2),
+          rrTp2: (best.riskReward * 1.5).toFixed(2),
+          validity: formatValidityDuration(validitySeconds),
+          validitySeconds,
+          keyReason: best.keyReason ?? "",
+          analysis,
+          indicators: tfSummaries,
+          fundingRate: fundingStr,
+          oiChange: oiStr,
+          atr: atr1h,
+          confluenceScore: best.compositeScore,
+          layer1Score: best.technicalScore,
+          layer2Score: best.microstructureScore,
+          layer3EntryQuality: best.volatilityScore >= 70 ? "good" as const : best.volatilityScore >= 50 ? "acceptable" as const : "poor" as const,
+          longShortRatio: best.longShortRatio,
+          cvdBias: best.cvdBias,
+          orderBookImbalance: best.orderBookImbalance,
+          technicalScore: best.technicalScore,
+          microstructureScore: best.microstructureScore,
+          volatilityScore: best.volatilityScore,
+          patternType: best.patternType,
+          vpBias: best.vpBias,
+          vpScore: best.vpScore,
+          priceVsPoc: best.priceVsPoc,
+          sentimentLabel: best.sentimentLabel,
+          sentimentBias: best.sentimentBias,
+          fearGreedValue: best.fearGreedValue,
+          fearGreedLabel: best.fearGreedLabel,
+          isTrending: best.isTrending,
+          trendingRank: best.trendingRank,
+          entryQualityScore: best.entryQualityScore,
+          entryQualityLabel: best.entryQualityLabel,
+          marketStructureTrend: best.marketStructureTrend,
+          liquiditySweep: best.liquiditySweep,
+          fvgDetected: best.fvgDetected,
+          rsiDivergence: best.rsiDivergence,
+          adx: best.adx,
+          vwapSignal: best.vwapSignal,
+          candlePattern: best.candlePattern,
+          nearFibLevel: best.nearFibLevel,
+          accuracyFactors,
+        };
 
-        const patternNote = input.symbolPatternContext
-          ? `\nUser inverse pattern context: ${input.symbolPatternContext}`
-          : "";
-
-        const layer1Summary = `Technical Score: ${best.technicalScore}/100 | RSI: ${best.rsi} | MACD: ${best.macdSignal} | BB: ${best.bbPosition}%`;
-        const layer2Summary = `Microstructure Score: ${best.microstructureScore}/100 | L/S Ratio: ${best.longShortRatio} | OI: ${best.oiTrend} | CVD: ${best.cvdBias} | OB Imbalance: ${(best.orderBookImbalance * 100).toFixed(1)}%`;
-        const layer3Summary = `Volatility Score: ${best.volatilityScore}/100 | Pattern: ${best.patternType} | ATR: ${atr1h}`;
-        const conviction = { direction: best.direction, passedAllLayers: true, rawScore: best.compositeScore };
-
-        const systemPrompt = `You are an elite crypto futures trading analyst using a 5-layer confluence system. Layers 1-3 have passed. Apply Layer 4 AI synthesis.
-ACCURACY MANDATE: HIGH confidence requires 5+ of 6 MTF indicators AND microstructure confirmation. MEDIUM requires 4/6. LOW = BAD_ENTRY.
-Provide: DIRECTION, CONFIDENCE, BAD_ENTRY, ENTRY, TP1, TP2, SL, RR_TP1, RR_TP2, VALIDITY, KEY_REASON, CONFLUENCE_SCORE (0-100), ANALYSIS (3-5 sentences).`;
-
-        const userPrompt = `Deep scan: ${sym}
-Current price: $${currentPrice.toLocaleString()}
-ATR (1H): ${atr1h}
-Funding: ${fundingStr || "N/A"} | OI: ${oiStr || "N/A"} | CVD: ${best.cvdBias} | OB Imbalance: ${(best.orderBookImbalance * 100).toFixed(1)}%
-
-5-LAYER RESULTS:
-${layer1Summary}
-${layer2Summary}
-${layer3Summary}
-
-ACCURACY ENGINE (Layer 5):
-- Market Structure: ${best.marketStructureTrend} | ADX: ${best.adx?.toFixed(1) ?? 'N/A'} (${(best.adx ?? 0) > 25 ? 'TRENDING' : 'RANGING'})
-- Liquidity Sweep: ${best.liquiditySweep ? 'YES — stop hunt detected' : 'No'}
-- Fair Value Gap: ${best.fvgDetected ? 'YES — imbalance zone' : 'No'}
-- RSI Divergence: ${best.rsiDivergence ?? 'None'}
-- VWAP Signal: ${best.vwapSignal}
-- Candle Pattern: ${best.candlePattern}
-- Near Fibonacci: ${best.nearFibLevel ? 'YES' : 'No'}
-- Entry Quality: ${best.entryQualityScore}/100 (Grade ${best.entryQualityLabel})
-
-Multi-timeframe indicators:
-${indText}${patternNote}
-
-Respond in EXACT format:
-DIRECTION: [LONG or SHORT]
-CONFIDENCE: [HIGH / MEDIUM / LOW]
-BAD_ENTRY: [YES / NO]
-BAD_ENTRY_REASON: [one sentence if YES, else N/A]
-ENTRY: $[price]
-TP1: $[price]
-TP2: $[price]
-SL: $[price]
-RR_TP1: [ratio]
-RR_TP2: [ratio]
-VALIDITY: [e.g. 2-4 hours]
-KEY_REASON: [one sentence]
-CONFLUENCE_SCORE: [0-100]
-ANALYSIS:
-[3-5 sentence full analysis]`;
-
-        try {
-          const response = await invokeLLM({
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user",   content: userPrompt },
-            ],
-          });
-          const rawContent = response.choices?.[0]?.message?.content ?? "";
-          const content = typeof rawContent === "string" ? rawContent : "";
-
-          const dirMatch       = content.match(/DIRECTION:\s*(LONG|SHORT)/i);
-          const confMatch      = content.match(/CONFIDENCE:\s*(HIGH|MEDIUM|LOW)/i);
-          const badEntryMatch  = content.match(/BAD_ENTRY:\s*(YES|NO)/i);
-          const badReasonMatch = content.match(/BAD_ENTRY_REASON:\s*([^\n]+)/i);
-          const entryMatch     = content.match(/^ENTRY:\s*\$?([\d,]+\.?\d*)/im);
-          const tp1Match       = content.match(/^TP1:\s*\$?([\d,]+\.?\d*)/im);
-          const tp2Match       = content.match(/^TP2:\s*\$?([\d,]+\.?\d*)/im);
-          const slMatch        = content.match(/^SL:\s*\$?([\d,]+\.?\d*)/im);
-          const rr1Match       = content.match(/RR_TP1:\s*([^\n]+)/i);
-          const rr2Match       = content.match(/RR_TP2:\s*([^\n]+)/i);
-          const validMatch     = content.match(/VALIDITY:\s*([^\n]+)/i);
-          const keyMatch       = content.match(/KEY_REASON:\s*([^\n]+)/i);
-          const confScoreMatch = content.match(/CONFLUENCE_SCORE:\s*(\d+)/i);
-          const analysisMatch  = content.match(/ANALYSIS:\n([\s\S]+)$/i);
-
-          const parsePrice = (m: RegExpMatchArray | null) => m ? parseFloat(m[1].replace(/,/g, "")) : null;
-          // ALWAYS use engine direction — it's mathematically consistent with entry/TP/SL
-          const direction   = best.direction;
-          const isBadEntry  = (badEntryMatch?.[1]?.toUpperCase() ?? "NO") === "YES";
-          // Use engine's native numeric confidence (55-95)
-          const confidenceNumScan = best.confidence;
-          const confidenceLabelScan = (confMatch?.[1]?.toUpperCase() ?? (confidenceNumScan >= 75 ? "HIGH" : confidenceNumScan >= 60 ? "MEDIUM" : "LOW")) as "HIGH" | "MEDIUM" | "LOW";
-          const confidence = confidenceLabelScan;
-          const confluenceScore = confScoreMatch ? parseInt(confScoreMatch[1]) : conviction.rawScore;
-
-          // ── Bad Entry Filter Logic ──────────────────────────────────────────
-          const badEntryFilterMode = input.badEntryFilter ?? "deprioritize";
-          const badEntryReason = isBadEntry ? (badReasonMatch?.[1]?.trim() ?? "Not an ideal entry point.") : null;
-          if (isBadEntry && badEntryFilterMode === "hide") {
-            return {
-              success: true,
-              symbol: sym,
-              currentPrice,
-              direction,
-              confidence: "LOW" as const,
-              confidenceNum: 0,
-              isBadEntry: true,
-              badEntryReason,
-              isFiltered: true,
-              filterReason: `Bad entry detected for ${sym}. Wait for price to reach a better level or try another coin.`,
-              entry: 0, tp1: 0, tp2: 0, sl: 0,
-              rrTp1: "0", rrTp2: "0",
-              validity: null, validitySeconds: 0,
-              keyReason: badEntryReason ?? "Bad entry — filtered.",
-              analysis: "",
-              indicators: tfSummaries,
-              fundingRate: fundingStr, oiChange: oiStr, atr: atr1h,
-              confluenceScore: 0, layer1Score: 0, layer2Score: 0,
-              layer3EntryQuality: "poor" as const,
-              longShortRatio: best.longShortRatio, cvdBias: best.cvdBias,
-              orderBookImbalance: best.orderBookImbalance,
-              technicalScore: best.technicalScore, microstructureScore: best.microstructureScore,
-              volatilityScore: best.volatilityScore, patternType: best.patternType,
-              vpBias: best.vpBias, vpScore: best.vpScore, priceVsPoc: best.priceVsPoc,
-              sentimentLabel: best.sentimentLabel, sentimentBias: best.sentimentBias,
-              fearGreedValue: best.fearGreedValue, fearGreedLabel: best.fearGreedLabel,
-              isTrending: best.isTrending, trendingRank: best.trendingRank,
-              entryQualityScore: 0, entryQualityLabel: "F",
-              marketStructureTrend: best.marketStructureTrend, liquiditySweep: false,
-              fvgDetected: false, rsiDivergence: null, adx: 0, vwapSignal: "",
-              candlePattern: "", nearFibLevel: false, accuracyFactors: [],
-              listedOnExchanges: best.listedOn, bestExchange: "bybit", exchangeCounts: {},
-            };
-          }
-
-          return {
-            success: true,
-            symbol: sym,
-            currentPrice,
-            direction,
-            confidence,
-            confidenceNum: confidenceNumScan,
-            isBadEntry,
-            badEntryReason,
-            // Use engine's ATR-based entry/TP/SL as primary
-            entry:    best.entryPrice,
-            tp1:      best.takeProfit,
-            tp2:      best.tp2,
-            sl:       best.stopLoss,
-            rrTp1:    best.riskReward.toFixed(2),
-            rrTp2:    (best.riskReward * 1.5).toFixed(2),
-            validity: validMatch?.[1]?.trim() ?? null,
-            validitySeconds: computeValiditySeconds({
-              atr1h,
-              currentPrice,
-              rsi1h: best.rsi,
-              confidence,
-              primaryTf: (input.primaryTf === "1d" ? "4h" : input.primaryTf) ?? "1h",
-              llmValidityHint: validMatch?.[1]?.trim() ?? null,
-            }),
-            keyReason:  keyMatch?.[1]?.trim() ?? "",
-            analysis:   analysisMatch?.[1]?.trim() ?? content,
-            indicators: tfSummaries,
-            fundingRate: fundingStr,
-            oiChange:    oiStr,
-            atr:         atr1h,
-            confluenceScore,
-            layer1Score: best.technicalScore,
-            layer2Score: best.microstructureScore,
-            layer3EntryQuality: best.volatilityScore >= 70 ? "good" : best.volatilityScore >= 50 ? "acceptable" : "poor",
-            longShortRatio: best.longShortRatio,
-            cvdBias: best.cvdBias,
-            orderBookImbalance: best.orderBookImbalance,
-            technicalScore: best.technicalScore,
-            microstructureScore: best.microstructureScore,
-            volatilityScore: best.volatilityScore,
-            patternType: best.patternType,
-            vpBias: best.vpBias, vpScore: best.vpScore, priceVsPoc: best.priceVsPoc,
-            sentimentLabel: best.sentimentLabel, sentimentBias: best.sentimentBias,
-            fearGreedValue: best.fearGreedValue, fearGreedLabel: best.fearGreedLabel,
-            isTrending: best.isTrending, trendingRank: best.trendingRank,
-            entryQualityScore: best.entryQualityScore, entryQualityLabel: best.entryQualityLabel,
-            marketStructureTrend: best.marketStructureTrend, liquiditySweep: best.liquiditySweep,
-            fvgDetected: best.fvgDetected, rsiDivergence: best.rsiDivergence,
-            adx: best.adx, vwapSignal: best.vwapSignal, candlePattern: best.candlePattern,
-            nearFibLevel: best.nearFibLevel, accuracyFactors: best.accuracyFactors,
-          };
-        } catch (err) {
-          // LLM failed — fall back to engine's real ATR-based prices so the user always
-          // sees a real signal rather than null/zero placeholders.
-          return {
-            success: true,
-            symbol: sym, currentPrice, direction: conviction.direction,
-            confidence: "MEDIUM" as const, isBadEntry: false, badEntryReason: null,
-            entry: best.entryPrice, tp1: best.takeProfit, tp2: best.tp2, sl: best.stopLoss,
-            rrTp1: best.riskReward.toFixed(2), rrTp2: (best.riskReward * 1.5).toFixed(2),
-            confidenceNum: best.confidence,
-            validity: null, validitySeconds: 3600,
-            keyReason: best.keyReason, analysis: "", indicators: tfSummaries,
-            fundingRate: fundingStr, oiChange: oiStr, atr: atr1h,
-            confluenceScore: best.compositeScore,
-            layer1Score: best.technicalScore, layer2Score: best.microstructureScore,
-            layer3EntryQuality: best.volatilityScore >= 70 ? "good" : best.volatilityScore >= 50 ? "acceptable" : "poor",
-            longShortRatio: best.longShortRatio, cvdBias: best.cvdBias,
-            orderBookImbalance: best.orderBookImbalance, technicalScore: best.technicalScore,
-            microstructureScore: best.microstructureScore, volatilityScore: best.volatilityScore,
-            patternType: best.patternType,
-            vpBias: best.vpBias ?? "neutral", vpScore: best.vpScore ?? 50, priceVsPoc: best.priceVsPoc ?? "at",
-            sentimentLabel: best.sentimentLabel ?? "Neutral", sentimentBias: best.sentimentBias ?? "neutral",
-            fearGreedValue: best.fearGreedValue ?? 50, fearGreedLabel: best.fearGreedLabel ?? "Neutral",
-            isTrending: best.isTrending ?? false, trendingRank: best.trendingRank ?? null,
-            entryQualityScore: best.entryQualityScore ?? 50, entryQualityLabel: best.entryQualityLabel ?? "C",
-            marketStructureTrend: best.marketStructureTrend ?? "ranging", liquiditySweep: best.liquiditySweep ?? false,
-            fvgDetected: best.fvgDetected ?? false, rsiDivergence: best.rsiDivergence ?? null,
-            adx: best.adx ?? 20, vwapSignal: best.vwapSignal ?? "neutral", candlePattern: best.candlePattern ?? "No Pattern",
-            nearFibLevel: best.nearFibLevel ?? false, accuracyFactors: best.accuracyFactors ?? [],
-          };
-        }
       }),
     }),
     // ─── Scan History Router ─────────────────────────────────────────────────
